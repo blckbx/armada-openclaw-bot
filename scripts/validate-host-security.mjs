@@ -10,7 +10,7 @@ const lock = JSON.parse(
   await readFile(new URL("../package-lock.json", import.meta.url), "utf8"),
 );
 
-const sdkBaseline = "2026.6.34";
+const sdkBaseline = "2026.9.7";
 const minimumHost = `>=${sdkBaseline}`;
 if (
   pkg.peerDependencies?.openclaw !== minimumHost ||

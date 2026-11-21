@@ -1,6 +1,6 @@
 import { nip19 } from "nostr-tools";
 import { verifyEvent, type NostrEvent } from "nostr-tools/pure";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createInboxAnnouncement,
   RelayManager,
@@ -297,30 +297,44 @@ describe("relay manager", () => {
     await manager.stop();
   });
 
-  it("reports inbound handler failures without sensitive error details", async () => {
-    const relay = new LoopbackRelay();
-    relays.push(relay);
-    await relay.start();
-    const manager = createManager([relay.url], {
-      onEvent: () => Promise.reject(new Error("sensitive handler details")),
-    });
-    await manager.start();
-    await eventually(() => manager.snapshot().ready);
+  it.each(["async", "sync", "diagnostic"] as const)(
+    "reports inbound handler failures without sensitive error details (%s)",
+    async (failure) => {
+      const relay = new LoopbackRelay();
+      relays.push(relay);
+      await relay.start();
+      const error = new Error("sensitive handler details");
+      const onInboundError = vi.fn(() => {
+        if (failure === "diagnostic")
+          throw new Error("sensitive logger failure");
+      });
+      const manager = createManager([relay.url], {
+        onEvent: () => {
+          if (failure === "async") return Promise.reject(error);
+          throw error;
+        },
+        onInboundError,
+      });
+      await manager.start();
+      await eventually(() => manager.snapshot().ready);
 
-    relay.sendEvent(createArmadaFixture());
-    await eventually(() => manager.snapshot().failedInboundEvents === 1);
+      relay.sendEvent(createArmadaFixture());
+      await eventually(() => manager.snapshot().failedInboundEvents === 1);
 
-    expect(manager.snapshot()).toMatchObject({
-      ready: true,
-      failedInboundEvents: 1,
-      health: "degraded",
-      lastError: "Inbound message processing failed.",
-    });
-    expect(JSON.stringify(manager.snapshot())).not.toContain(
-      "sensitive handler details",
-    );
-    await manager.stop();
-  });
+      expect(manager.snapshot()).toMatchObject({
+        ready: true,
+        failedInboundEvents: 1,
+        health: "degraded",
+        lastError: "Inbound message processing failed.",
+      });
+      await eventually(() => manager.snapshot().activeInboundHandlers === 0);
+      expect(onInboundError).toHaveBeenCalledExactlyOnceWith(error);
+      expect(JSON.stringify(manager.snapshot())).not.toContain(
+        "sensitive handler details",
+      );
+      await manager.stop();
+    },
+  );
 
   it("surfaces authenticated rate limiting without sensitive details", async () => {
     const relay = new LoopbackRelay();

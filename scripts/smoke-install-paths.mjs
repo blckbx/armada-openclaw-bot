@@ -70,7 +70,14 @@ try {
   const openclawCli = join(root, "node_modules/openclaw/openclaw.mjs");
   execFileSync(
     process.execPath,
-    [openclawCli, "plugins", "install", `npm-pack:${tarball}`, "--force"],
+    [
+      openclawCli,
+      "plugins",
+      "install",
+      `npm-pack:${tarball}`,
+      "--force",
+      "--accept-capabilities",
+    ],
     { stdio: "pipe", env: managedEnvironment },
   );
   const inspection = JSON.parse(

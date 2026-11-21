@@ -1,4 +1,6 @@
-import type { JsonSchemaObject } from "openclaw/plugin-sdk/json-schema-runtime";
+import type { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/core";
+
+type JsonSchemaObject = Parameters<typeof buildJsonChannelConfigSchema>[0];
 
 export const ARMADA_CHANNEL_JSON_SCHEMA: JsonSchemaObject = {
   $schema: "http://json-schema.org/draft-07/schema#",

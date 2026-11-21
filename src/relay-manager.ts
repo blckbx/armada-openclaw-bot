@@ -55,6 +55,8 @@ export interface RelayManagerOptions {
   readonly maxMessageAgeSeconds: number;
   readonly maxFutureSkewSeconds: number;
   readonly onEvent: (event: NostrEvent) => Promise<void> | void;
+  /** Internal diagnostics only; callers must sanitize before logging. */
+  readonly onInboundError?: (error: unknown) => void;
   readonly onStatus?: (snapshot: RelayManagerSnapshot) => void;
   readonly nowSeconds?: () => number;
   readonly lookup?: RelayDnsLookup;
@@ -425,13 +427,22 @@ export class RelayManager {
     this.activeInboundHandlers += 1;
     this.refreshSnapshot();
     let failed = false;
-    const task = Promise.resolve(this.options.onEvent(cloneEvent(event)))
-      .catch(() => {
+    const task = Promise.resolve()
+      .then(() => {
+        if (!this.isCurrent(generation)) return;
+        return this.options.onEvent(cloneEvent(event));
+      })
+      .catch((error: unknown) => {
         if (!this.isCurrent(generation)) return;
         failed = true;
         this.failedInboundEvents += 1;
         this.inboundError = "Inbound message processing failed.";
         this.refreshSnapshot("degraded");
+        try {
+          this.options.onInboundError?.(error);
+        } catch {
+          // Diagnostics must not interrupt queue draining or shutdown.
+        }
       })
       .then(() => {
         this.activeInboundHandlers -= 1;

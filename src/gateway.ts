@@ -154,6 +154,9 @@ export function createArmadaGatewayAdapter(
         maxMessageAgeSeconds: config.maxMessageAgeSeconds,
         maxFutureSkewSeconds: config.maxFutureSkewSeconds,
         onEvent: handleInbound,
+        onInboundError: (error) => {
+          context.log?.error(formatInboundDiagnostic(error));
+        },
         onStatus: project,
       });
       managerHolder.value = manager;
@@ -200,4 +203,31 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
   return new Promise((resolve) =>
     signal.addEventListener("abort", () => resolve(), { once: true }),
   );
+}
+
+// Never interpolate arbitrary error names, messages, stacks, or payloads.
+// Preserve causes internally and expose only bounded built-in classifications.
+function formatInboundDiagnostic(error: unknown): string {
+  const kinds: string[] = [];
+  const seen = new Set<unknown>();
+  let current = error;
+  while (kinds.length < 4 && !seen.has(current)) {
+    seen.add(current);
+    kinds.push(
+      current instanceof TypeError
+        ? "TypeError"
+        : current instanceof ReferenceError
+          ? "ReferenceError"
+          : current instanceof RangeError
+            ? "RangeError"
+            : current instanceof SyntaxError
+              ? "SyntaxError"
+              : current instanceof Error
+                ? "Error"
+                : "Unknown",
+    );
+    if (!(current instanceof Error) || current.cause === undefined) break;
+    current = current.cause;
+  }
+  return `Inbound message processing failed (${kinds.join(" -> ")}).`;
 }

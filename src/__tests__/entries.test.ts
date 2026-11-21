@@ -15,7 +15,7 @@ describe("plugin entries", () => {
     expect(timer).not.toHaveBeenCalled();
     expect(interval).not.toHaveBeenCalled();
 
-    expect(setup.default.plugin.setup).toBeUndefined();
+    expect(setup.default.plugin.setupContract).toBeUndefined();
   });
 
   it("turns duplicate nostr ownership into an actionable local failure", async () => {

@@ -1,5 +1,6 @@
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/core";
 import { describe, expect, it, vi } from "vitest";
+import { InboundDispatchError } from "../inbound.js";
 import { resolveArmadaAccount } from "../account.js";
 import {
   createArmadaGatewayAdapter,
@@ -38,6 +39,7 @@ describe("Slice 3 gateway lifecycle", () => {
     const account = resolveArmadaAccount(cfg);
     const abort = new AbortController();
     const statuses: ChannelAccountSnapshot[] = [];
+    const logError = vi.fn();
     let managerOptions: RelayManagerOptions | undefined;
     let snapshot = INITIAL_SNAPSHOT;
     const startManager = vi.fn(() => {
@@ -89,6 +91,7 @@ describe("Slice 3 gateway lifecycle", () => {
       accountId: account.accountId,
       account,
       runtime: {} as never,
+      log: { info: vi.fn(), warn: vi.fn(), error: logError, debug: vi.fn() },
       abortSignal: abort.signal,
       getStatus: () => ({ accountId: account.accountId }),
       setStatus: (status) => statuses.push(status),
@@ -118,6 +121,16 @@ describe("Slice 3 gateway lifecycle", () => {
       (readyStatus?.probe as RelayManagerSnapshot | undefined)
         ?.liveSubscriptions,
     ).toBe(2);
+
+    const cause = new TypeError("sensitive plaintext or key");
+    cause.name = "sensitive error name";
+    managerOptions?.onInboundError?.(
+      new InboundDispatchError(undefined, { cause }),
+    );
+    expect(logError).toHaveBeenCalledExactlyOnceWith(
+      "Inbound message processing failed (Error -> TypeError).",
+    );
+    expect(JSON.stringify(logError.mock.calls)).not.toContain("sensitive");
 
     abort.abort();
     await running;

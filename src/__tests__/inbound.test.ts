@@ -1,4 +1,12 @@
-import { getEventHash, type NostrEvent } from "nostr-tools/pure";
+import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  runChannelInboundEvent,
+  type ChannelInboundTurnPlan,
+} from "openclaw/plugin-sdk/channel-inbound";
+import { getEventHash, getPublicKey, type NostrEvent } from "nostr-tools/pure";
 import { createClaimableDedupe } from "openclaw/plugin-sdk/persistent-dedupe";
 import { describe, expect, it, vi } from "vitest";
 import { createInboundProcessor, InboundDispatchError } from "../inbound.js";
@@ -212,6 +220,49 @@ describe("allowlisted inbound AI round trip", () => {
     }
   });
 
+  it.each(["throw", "record", "dispatch"] as const)(
+    "preserves the diagnostic cause for a %s failure and releases replay",
+    async (failure) => {
+      const cause = new TypeError("sensitive SDK failure");
+      const gate = replayGate();
+      const processor = createInboundProcessor({
+        cfg: {},
+        runtime: {} as never,
+        accountId: "default",
+        config: {
+          dmPolicy: "allowlist",
+          allowFrom: [SENDER_PUBLIC_KEY],
+          maxMessageAgeSeconds: 3_600,
+          maxFutureSkewSeconds: 300,
+        },
+        identity: { secretKey: BOT_SECRET_KEY, publicKey: BOT_PUBLIC_KEY },
+        replayGate: gate,
+        resolveRecipientRelays: () => Promise.resolve([]),
+        publishRecipient: vi.fn(),
+        publishSelfCopy: vi.fn(),
+        resolveIngress: () => Promise.resolve(allowDecision()),
+        dispatch: (params) => {
+          if (failure === "throw") return Promise.reject(cause);
+          if (failure === "record") params.onRecordError(cause);
+          else params.onDispatchError(cause, { kind: "final" });
+          return Promise.resolve({} as never);
+        },
+        nowSeconds: () => FIXTURE_NOW,
+      });
+
+      const error: unknown = await processor
+        .handle(createArmadaFixture())
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(InboundDispatchError);
+      expect((error as Error).cause).toBe(cause);
+      expect((error as Error).message).toBe(
+        "Inbound direct message dispatch failed.",
+      );
+      expect(gate.commits).toBe(0);
+      expect(gate.releases).toBe(1);
+    },
+  );
+
   it("passes managed Armada media paths into the OpenClaw agent turn", async () => {
     const published: NostrEvent[] = [];
     const prepareMedia = vi.fn(() =>
@@ -238,12 +289,12 @@ describe("allowlisted inbound AI round trip", () => {
         "please analyze\n[Attachment: image/png]",
       );
       expect(input.extraContext).toMatchObject({
-        MediaPath: "/managed/inbound/photo.png",
-        MediaUrl: "/managed/inbound/photo.png",
-        MediaType: "image/png",
-        MediaPaths: ["/managed/inbound/photo.png"],
-        MediaUrls: ["/managed/inbound/photo.png"],
-        MediaTypes: ["image/png"],
+        media: [
+          expect.objectContaining({
+            path: "/managed/inbound/photo.png",
+            contentType: "image/png",
+          }),
+        ],
       });
       await input.deliver({ text: "the image contains a lighthouse" });
       return {} as never;
@@ -315,7 +366,8 @@ describe("allowlisted inbound AI round trip", () => {
   });
 
   it("routes only the authenticated inner sender and returns a decryptable native reply", async () => {
-    const ingress = vi.fn(() => Promise.resolve(allowDecision()));
+    const admittedIngress = allowDecision();
+    const ingress = vi.fn(() => Promise.resolve(admittedIngress));
     const published: NostrEvent[] = [];
     const recoveryCopies: NostrEvent[] = [];
     const publish = vi.fn((_relays: string[], event: NostrEvent) => {
@@ -376,13 +428,15 @@ describe("allowlisted inbound AI round trip", () => {
         senderAddress: `nostr:${SENDER_PUBLIC_KEY}`,
         recipientAddress: `nostr:${BOT_PUBLIC_KEY}`,
         rawBody: "armada fixture plaintext",
+        inboundAccessAuthorized: true,
+        channelIngress: admittedIngress,
       }),
     );
     expect(JSON.stringify(ingress.mock.calls)).not.toContain(
-      expectOuterPublicKey(WRAPPER_SECRET_KEY),
+      getPublicKey(WRAPPER_SECRET_KEY),
     );
     expect(JSON.stringify(dispatch.mock.calls)).not.toContain(
-      expectOuterPublicKey(WRAPPER_SECRET_KEY),
+      getPublicKey(WRAPPER_SECRET_KEY),
     );
     expect(publish).toHaveBeenCalledWith(
       ["wss://recipient.example/"],
@@ -490,22 +544,31 @@ describe("allowlisted inbound AI round trip", () => {
   it("uses the exact OpenClaw dispatcher for the configured owner session", async () => {
     const peers: string[] = [];
     const dispatchConfigs: unknown[] = [];
-    const recordInboundSession = vi.fn(() => Promise.resolve());
-    const dispatchReplyWithBufferedBlockDispatcher = vi.fn(
-      async (params: never) => {
-        const dispatcher = params as {
-          dispatcherOptions: {
-            deliver: (payload: unknown) => Promise<void>;
-          };
-        };
-        await dispatcher.dispatcherOptions.deliver({
-          text: "exact SDK answer",
-        });
-        return {} as never;
-      },
+    const directory = await mkdtemp(join(tmpdir(), "armada-sdk-inbound-"));
+    const storePath = join(directory, "sessions.json");
+    const gate = replayGate();
+    const published: NostrEvent[] = [];
+    const replyResolver = vi.fn(() => {
+      expect(gate.commits).toBe(0);
+      return Promise.resolve({ text: "exact SDK answer" });
+    });
+    const run = vi.fn((params: Parameters<typeof runChannelInboundEvent>[0]) =>
+      runChannelInboundEvent({
+        ...params,
+        adapter: {
+          ...params.adapter,
+          resolveTurn: async (...args) => ({
+            ...((await params.adapter.resolveTurn(
+              ...args,
+            )) as ChannelInboundTurnPlan),
+            replyResolver,
+          }),
+        },
+      }),
     );
     const runtime = {
       channel: {
+        inbound: { run },
         routing: {
           resolveAgentRoute: ({
             cfg,
@@ -524,19 +587,18 @@ describe("allowlisted inbound AI round trip", () => {
           },
         },
         session: {
-          resolveStorePath: () => "/tmp/armada-slice4-sessions.json",
+          resolveStorePath: () => storePath,
           readSessionUpdatedAt: () => undefined,
-          recordInboundSession,
         },
         reply: {
           resolveEnvelopeFormatOptions: () => ({}),
           formatAgentEnvelope: ({ body }: { body: string }) => body,
           finalizeInboundContext: (context: unknown) => context,
-          dispatchReplyWithBufferedBlockDispatcher,
         },
       },
     } as never;
     const cfg = {
+      session: { store: storePath },
       messages: {
         visibleReplies: "message_tool",
         groupChat: { visibleReplies: "message_tool" },
@@ -553,27 +615,57 @@ describe("allowlisted inbound AI round trip", () => {
         maxFutureSkewSeconds: 300,
       },
       identity: { secretKey: BOT_SECRET_KEY, publicKey: BOT_PUBLIC_KEY },
-      replayGate: replayGate(),
+      replayGate: gate,
       resolveRecipientRelays: () =>
         Promise.resolve(["wss://recipient.example/"]),
-      publishRecipient: () => Promise.resolve(),
+      publishRecipient: (_relays, event) => {
+        expect(gate.commits).toBe(0);
+        published.push(event);
+        return Promise.resolve();
+      },
       publishSelfCopy: () => Promise.resolve(),
       nowSeconds: () => FIXTURE_NOW,
     });
-    await processor.handle(createArmadaFixture());
+    try {
+      await processor.handle(createArmadaFixture());
 
-    expect(peers).toEqual([SENDER_PUBLIC_KEY]);
-    expect(dispatchConfigs).toEqual([
-      {
-        messages: {
-          visibleReplies: "automatic",
-          groupChat: { visibleReplies: "message_tool" },
+      expect(peers).toEqual([SENDER_PUBLIC_KEY]);
+      expect(dispatchConfigs).toEqual([
+        {
+          session: { store: storePath },
+          messages: {
+            visibleReplies: "automatic",
+            groupChat: { visibleReplies: "message_tool" },
+          },
         },
-      },
-    ]);
-    expect(cfg.messages.visibleReplies).toBe("message_tool");
-    expect(recordInboundSession).toHaveBeenCalledOnce();
-    expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledOnce();
+      ]);
+      expect(cfg.messages.visibleReplies).toBe("message_tool");
+      expect(run).toHaveBeenCalledOnce();
+      expect(run.mock.calls[0]?.[0].raw).toMatchObject({
+        InboundAccessAuthorized: true,
+        ConversationRouteContextObserved: true,
+        SessionKey: `agent:main:nostr:direct:${SENDER_PUBLIC_KEY}`,
+      });
+      expect(replyResolver).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(
+          getSessionEntry({
+            storePath,
+            sessionKey: `agent:main:nostr:direct:${SENDER_PUBLIC_KEY}`,
+          }),
+        ).toBeDefined(),
+      );
+      const reply = published.find((event) => event.kind === 1059);
+      expect(reply).toBeDefined();
+      if (reply === undefined) throw new Error("missing SDK reply");
+      expect(
+        independentlyOpenWrap(reply, SENDER_SECRET_KEY).rumor.content,
+      ).toBe("exact SDK answer");
+      expect(gate.commits).toBe(1);
+      expect(gate.releases).toBe(0);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("blocks a different authenticated sender through the real ingress resolver", async () => {
@@ -612,11 +704,9 @@ describe("allowlisted inbound AI round trip", () => {
   });
 
   it("keeps peer delivery successful when recovery-copy publication fails", async () => {
-    const publishRecipient = vi.fn((relayUrls: string[], event: NostrEvent) => {
-      void relayUrls;
-      void event;
-      return Promise.resolve();
-    });
+    const publishRecipient = vi.fn<
+      (relayUrls: string[], event: NostrEvent) => Promise<void>
+    >(() => Promise.resolve());
     const publishSelfCopy = vi.fn(() =>
       Promise.reject(new Error("sensitive relay failure")),
     );
@@ -868,11 +958,9 @@ describe("allowlisted inbound AI round trip", () => {
   it("suppresses a model response delivered after account cancellation", async () => {
     const abort = new AbortController();
     let finishModel: (() => void) | undefined;
-    const publishRecipient = vi.fn((relayUrls: string[], event: NostrEvent) => {
-      void relayUrls;
-      void event;
-      return Promise.resolve();
-    });
+    const publishRecipient = vi.fn<
+      (relayUrls: string[], event: NostrEvent) => Promise<void>
+    >(() => Promise.resolve());
     const gate = replayGate();
     const dispatch = vi.fn(async (params: never) => {
       await new Promise<void>((resolve) => {
@@ -916,12 +1004,6 @@ describe("allowlisted inbound AI round trip", () => {
     expect(gate.releases).toBe(1);
   });
 });
-
-function expectOuterPublicKey(secretKey: Uint8Array): string {
-  // Imported lazily would obscure the assertion; this is scalar(3)'s pubkey.
-  void secretKey;
-  return "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
-}
 
 function createMediaFixture(): NostrEvent {
   const unsigned = {

@@ -33,7 +33,7 @@ export interface ValidateRelayUrlInput {
 }
 
 const defaultLookup: RelayDnsLookup = async (hostname) => {
-  const answers = await dnsLookup(hostname, { all: true, verbatim: true });
+  const answers = await dnsLookup(hostname, { all: true, order: "verbatim" });
   return answers.flatMap((answer) =>
     answer.family === 4 || answer.family === 6
       ? [{ address: answer.address, family: answer.family }]

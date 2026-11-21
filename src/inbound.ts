@@ -4,7 +4,6 @@ import {
   type ResolvedChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
-  buildChannelInboundMediaPayload,
   dispatchInboundDirectDmWithRuntime,
   toInboundMediaFacts,
 } from "openclaw/plugin-sdk/channel-inbound";
@@ -34,8 +33,11 @@ const HEX_32 = /^[0-9a-f]{64}$/u;
 export const ARMADA_TYPING_REFRESH_MILLISECONDS = 4_000;
 
 export class InboundDispatchError extends Error {
-  constructor(message = "Inbound direct message dispatch failed.") {
-    super(message);
+  constructor(
+    message = "Inbound direct message dispatch failed.",
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
     this.name = "InboundDispatchError";
   }
 }
@@ -200,7 +202,9 @@ export function createInboundProcessor(
 
         const deliveredMessageIds: string[] = [];
         const warnings = new Set<string>();
-        const callbackState = { failed: false };
+        const callbackState: { failed: boolean; cause?: unknown } = {
+          failed: false,
+        };
         const resolveTurnRecipientRelays = createTurnRelayResolver(() =>
           options.resolveRecipientRelays(senderPublicKey),
         );
@@ -219,15 +223,17 @@ export function createInboundProcessor(
             claim.release();
             return { handled: false };
           }
-          const mediaContext = buildChannelInboundMediaPayload(
-            toInboundMediaFacts(preparedMedia.media),
-          );
+          const mediaContext = {
+            media: toInboundMediaFacts(preparedMedia.media),
+          };
           await dispatch({
             cfg: withAutomaticVisibleReplies(options.cfg),
             runtime: options.runtime,
             channel: "nostr",
             channelLabel: "Armada DM",
             accountId: options.accountId,
+            inboundAccessAuthorized: true,
+            channelIngress: ingress,
             peer: { kind: "direct", id: senderPublicKey },
             senderId: senderPublicKey,
             senderAddress,
@@ -293,14 +299,20 @@ export function createInboundProcessor(
                 warnings.add(RECOVERY_COPY_WARNING);
               }
             },
-            onRecordError: () => {
+            onRecordError: (error) => {
+              if (!callbackState.failed) callbackState.cause = error;
               callbackState.failed = true;
             },
-            onDispatchError: () => {
+            onDispatchError: (error) => {
+              if (!callbackState.failed) callbackState.cause = error;
               callbackState.failed = true;
             },
           });
-          if (callbackState.failed) throw new InboundDispatchError();
+          if (callbackState.failed) {
+            throw new InboundDispatchError(undefined, {
+              cause: callbackState.cause,
+            });
+          }
           if (isAborted(signal)) {
             if (deliveredMessageIds.length > 0) await claim.commit();
             else claim.release();
@@ -319,8 +331,12 @@ export function createInboundProcessor(
         }
       } catch (error) {
         claim.release(error);
-        if (error instanceof DirectMessageDeliveryError) throw error;
-        throw new InboundDispatchError();
+        if (
+          error instanceof DirectMessageDeliveryError ||
+          error instanceof InboundDispatchError
+        )
+          throw error;
+        throw new InboundDispatchError(undefined, { cause: error });
       }
     },
   };

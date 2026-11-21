@@ -1,5 +1,14 @@
 # Nostr Armada DM Bot — Implementation Plan
 
+## Active maintenance — OpenClaw 2026.9.7 inbound compatibility
+
+The ordered feature slices remain unchanged. The active work is a compatibility
+repair to the existing inbound path: build against public `openclaw@2026.9.7`
+exports, forward admitted ingress and its authorization marker, preserve internal
+error causes, and keep public status and logger diagnostics free of message or key
+data. The minimum host becomes 2026.9.7 and Node follows that host's requirements.
+The 2026.6.34 references below record the original implementation baseline.
+
 ## 1. Objective
 
 Build a standalone OpenClaw channel plugin that lets people talk privately to an OpenClaw agent from Armada using standard Nostr end-to-end encrypted direct messages:

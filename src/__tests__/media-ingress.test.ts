@@ -186,7 +186,7 @@ describe("Armada encrypted inbound media", () => {
   it("downloads, verifies, decrypts, and saves managed media", async () => {
     const plaintext = Buffer.from("real image bytes");
     const ciphertext = encrypt(plaintext);
-    const loadRemote = vi.fn(
+    const loadRemote = vi.fn<
       (
         url: string,
         options: {
@@ -194,17 +194,20 @@ describe("Armada encrypted inbound media", () => {
           readIdleTimeoutMs: number;
           requestInit: RequestInit;
         },
-      ) => {
-        void url;
-        void options;
-        return Promise.resolve({
-          buffer: ciphertext,
-          contentType: "application/octet-stream",
-          kind: undefined,
-          fileName: "ciphertext.bin",
-        });
-      },
-    );
+      ) => Promise<{
+        buffer: Buffer;
+        contentType: string;
+        kind: undefined;
+        fileName: string;
+      }>
+    >(() => {
+      return Promise.resolve({
+        buffer: ciphertext,
+        contentType: "application/octet-stream",
+        kind: undefined,
+        fileName: "ciphertext.bin",
+      });
+    });
     const saveMedia = vi.fn(() =>
       Promise.resolve({
         id: "photo.png",
