@@ -37,9 +37,9 @@ For a standard OpenClaw installation, pack and install the managed artifact. Ope
 
 ```bash
 npm pack
-sha256sum openclaw-armada-dm-0.1.5.tgz > openclaw-armada-dm-0.1.5.tgz.sha256
-sha256sum --check openclaw-armada-dm-0.1.5.tgz.sha256
-openclaw plugins install npm-pack:/absolute/path/openclaw-armada-dm-0.1.5.tgz --accept-capabilities
+sha256sum openclaw-armada-dm-0.1.6.tgz > openclaw-armada-dm-0.1.6.tgz.sha256
+sha256sum --check openclaw-armada-dm-0.1.6.tgz.sha256
+openclaw plugins install npm-pack:/absolute/path/openclaw-armada-dm-0.1.6.tgz --accept-capabilities
 openclaw plugins enable armada-dm
 openclaw gateway restart
 ```
@@ -55,14 +55,14 @@ Maintainers can publish the package and checksum in the repository's Releases
 section by pushing a version tag after its version bump reaches `main`:
 
 ```bash
-git tag -a v0.1.5 -m "v0.1.5"
-git push origin v0.1.5
+git tag -a v0.1.6 -m "v0.1.6"
+git push origin v0.1.6
 ```
 
 The tag must exactly match `v` followed by the version in `package.json`. The
 release workflow repeats the install, test, build, package-validation, pack, and
 checksum sequence before creating the GitHub release. It attaches
-`openclaw-armada-dm-0.1.5.tgz` and its `.sha256` checksum as release assets.
+`openclaw-armada-dm-0.1.6.tgz` and its `.sha256` checksum as release assets.
 
 The published `setup-entry.js` uses only the OpenClaw `2026.9.7` public SDK compatibility baseline, and deployment requires OpenClaw `2026.9.7` or newer. It does not run a wizard, prompt for values, edit configuration, read the secret file, publish events, or start relay connections.
 
@@ -218,4 +218,4 @@ Rotation creates a new Nostr bot identity; it is not an in-place credential refr
 
 ## Unsupported features
 
-The plugin supports inbound encrypted files/media, direct text replies, and outbound ephemeral Armada typing notifications for an admitted owner turn. It does not implement outbound media uploads/replies, groups, public notes, NIP-04, plaintext remote attachments, reactions, deletes, edits, inbound typing, presence, disappearing messages, scheduled sends, unsolicited bot-initiated DMs, or a native command registry.
+The plugin supports inbound encrypted files/media, direct text replies, and outbound ephemeral Armada typing notifications for an admitted owner turn. It accepts Armada's NIP-89 `client` attribution inside encrypted kind-14/15 rumors and optional NIP-13 `nonce` metadata on signed gift wraps; neither affects authorization or routing. It does not implement outbound media uploads/replies, groups, public notes, NIP-04, plaintext remote attachments, reactions, deletes, edits, inbound typing, presence, disappearing messages, scheduled sends, unsolicited bot-initiated DMs, or a native command registry.

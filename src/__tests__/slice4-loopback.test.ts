@@ -10,6 +10,7 @@ import {
   BOT_PUBLIC_KEY,
   BOT_SECRET_KEY,
   createArmadaFixture,
+  createRumor,
   FIXTURE_NOW,
   independentlyOpenWrap,
   SENDER_PUBLIC_KEY,
@@ -127,7 +128,24 @@ describe("Slice 6 conversation-bound encrypted loopback", () => {
 
       await manager.start();
       await eventually(() => manager.snapshot().liveSubscriptions === 1);
-      const inbound = createArmadaFixture();
+      // Armada fada87d (2026-11-21): client metadata is enabled by default;
+      // proof-of-work metadata can also appear on the outer gift wrap.
+      const inbound = createArmadaFixture({
+        rumorTransform: () =>
+          createRumor({
+            tags: [
+              ["p", BOT_PUBLIC_KEY],
+              ["client", "Armada"],
+            ],
+          }),
+        wrapTemplate: {
+          tags: [
+            ["p", BOT_PUBLIC_KEY],
+            ["k", "14"],
+            ["nonce", "123", "0"],
+          ],
+        },
+      });
       relay.sendEvent(inbound);
       await eventually(
         () =>

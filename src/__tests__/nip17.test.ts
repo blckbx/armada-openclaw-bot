@@ -49,6 +49,87 @@ function expectProtocolError(action: () => unknown): void {
 }
 
 describe("NIP-17 inbound cryptographic core", () => {
+  it.each([14, 15])(
+    "accepts NIP-89 client metadata on kind-%s rumors",
+    (kind) => {
+      const rumor = createRumor({
+        kind,
+        tags: [
+          ["p", BOT_PUBLIC_KEY],
+          [
+            "client",
+            "Armada",
+            `31990:${SENDER_PUBLIC_KEY}:armada`,
+            "wss://app.example/",
+          ],
+        ],
+      });
+      expect(
+        unwrap(createArmadaFixture({ rumorTransform: () => rumor })).rumor,
+      ).toEqual(rumor);
+    },
+  );
+
+  it("accepts Armada's default client tag and optional outer proof-of-work metadata", () => {
+    const rumor = createRumor({
+      tags: [
+        ["p", BOT_PUBLIC_KEY],
+        ["client", "Armada"],
+      ],
+    });
+    const wrap = createArmadaFixture({
+      rumorTransform: () => rumor,
+      wrapTemplate: {
+        tags: [
+          ["p", BOT_PUBLIC_KEY],
+          ["k", "14"],
+          ["nonce", "123", "0"],
+        ],
+      },
+    });
+    expect(unwrap(wrap).rumorId).toBe(rumor.id);
+    expectProtocolError(() =>
+      unwrap({
+        ...wrap,
+        tags: [
+          ["p", BOT_PUBLIC_KEY],
+          ["nonce", "124", "0"],
+        ],
+      }),
+    );
+  });
+
+  it.each([
+    ["client"],
+    ["client", ""],
+    ["nonce", "1", "0"],
+    ["expiration", String(FIXTURE_NOW + 100)],
+    ["edited", String(FIXTURE_NOW)],
+  ])("still rejects unsupported or malformed rumor metadata %j", (...tag) => {
+    const rumor = createRumor({ tags: [["p", BOT_PUBLIC_KEY], tag] });
+    expectProtocolError(() =>
+      unwrap(createArmadaFixture({ rumorTransform: () => rumor })),
+    );
+  });
+
+  it.each([
+    ["nonce"],
+    ["nonce", "1"],
+    ["nonce", "-1", "8"],
+    ["nonce", "1", "garbage"],
+    ["nonce", "1", "257"],
+    ["client", "Armada"],
+    ["expiration", String(FIXTURE_NOW + 100)],
+  ])("still rejects unsupported or malformed outer metadata %j", (...tag) => {
+    expectProtocolError(() =>
+      unwrap(
+        createArmadaFixture({
+          wrapTemplate: { tags: [["p", BOT_PUBLIC_KEY], tag] },
+        }),
+      ),
+    );
+  });
+
   it("authenticates an Armada-compatible kind-14 gift wrap", () => {
     const wrap = createArmadaFixture();
     const opened = unwrap(wrap);

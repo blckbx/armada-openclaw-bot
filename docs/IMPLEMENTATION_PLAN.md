@@ -9,6 +9,12 @@ error causes, and keep public status and logger diagnostics free of message or k
 data. The minimum host becomes 2026.9.7 and Node follows that host's requirements.
 The 2026.6.34 references below record the original implementation baseline.
 
+The active repair also covers current Armada NIP-17 ingress compatibility:
+accept NIP-89 `client` metadata inside authenticated kind-14/15 rumors and
+NIP-13 `nonce` metadata on signed gift wraps. Verify against Armada `fada87d`
+(2026-11-21), preserve the existing one-to-one authorization boundary, and
+continue rejecting disappearing-message, edit, and group semantics.
+
 ## 1. Objective
 
 Build a standalone OpenClaw channel plugin that lets people talk privately to an OpenClaw agent from Armada using standard Nostr end-to-end encrypted direct messages:

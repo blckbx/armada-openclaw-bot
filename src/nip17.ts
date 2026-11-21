@@ -729,6 +729,7 @@ function getSingleRecipient(tags: string[][]): string | null {
 
 function hasOnlyHarmlessOuterTags(tags: string[][]): boolean {
   let kindHints = 0;
+  let nonces = 0;
   for (const tag of tags) {
     if (tag[0] === "p") continue;
     if (
@@ -739,15 +740,36 @@ function hasOnlyHarmlessOuterTags(tags: string[][]): boolean {
       kindHints += 1;
       continue;
     }
+    // NIP-59 permits NIP-13 proof of work on the carrier. This metadata
+    // grants no trust; signature verification still covers the entire wrap.
+    if (
+      tag[0] === "nonce" &&
+      tag.length === 3 &&
+      tag[1] !== undefined &&
+      /^[0-9]+$/u.test(tag[1]) &&
+      tag[2] !== undefined &&
+      /^[0-9]+$/u.test(tag[2]) &&
+      Number(tag[2]) <= 256
+    ) {
+      nonces += 1;
+      continue;
+    }
     return false;
   }
-  return kindHints <= 1;
+  return kindHints <= 1 && nonces <= 1;
 }
 
 function hasOnlySupportedRumorTags(kind: 14 | 15, tags: string[][]): boolean {
   let replies = 0;
+  let clients = 0;
   for (const tag of tags) {
     if (tag[0] === "p") continue;
+    // Armada enables NIP-89 client attribution by default. Keep it inside
+    // the authenticated rumor; it must not influence identity or routing.
+    if (tag[0] === "client" && tag.length >= 2 && tag[1]?.trim()) {
+      clients += 1;
+      continue;
+    }
     if (
       tag[0] === "e" &&
       tag.length >= 2 &&
@@ -773,7 +795,7 @@ function hasOnlySupportedRumorTags(kind: 14 | 15, tags: string[][]): boolean {
     if (kind === 15 && isSupportedFileMessageTag(tag)) continue;
     return false;
   }
-  return replies <= 1;
+  return replies <= 1 && clients <= 1;
 }
 
 function isRecipientTag(tag: string[]): boolean {

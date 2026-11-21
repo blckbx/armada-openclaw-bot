@@ -70,6 +70,27 @@ function imetaTag(ciphertext: Buffer, plaintext: Buffer, url = URL): string[] {
 }
 
 describe("Armada encrypted inbound media", () => {
+  it("ignores NIP-89 client handler hints when parsing kind-15 file metadata", () => {
+    const plaintext = Buffer.from("image bytes");
+    const ciphertext = encrypt(plaintext);
+    const tags = topLevelTags(ciphertext, plaintext);
+    const expected = parseInboundMedia(rumor(15, URL, tags));
+    expect(expected.attachments).toHaveLength(1);
+    expect(
+      parseInboundMedia(
+        rumor(15, URL, [
+          ...tags,
+          [
+            "client",
+            "Armada",
+            `31990:${SENDER_PUBLIC_KEY}:armada`,
+            "wss://app.example/",
+          ],
+        ]),
+      ),
+    ).toEqual(expected);
+  });
+
   it("normalizes kind-15 and Armada kind-14 imeta metadata", () => {
     const plaintext = Buffer.from("image bytes");
     const ciphertext = encrypt(plaintext);

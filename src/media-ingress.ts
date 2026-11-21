@@ -216,7 +216,8 @@ function flattenTopLevelTags(tags: string[][]): Record<string, string> {
       name === undefined ||
       value === undefined ||
       name === "p" ||
-      name === "e"
+      name === "e" ||
+      name === "client"
     )
       continue;
     if (tag.length !== 2 || Object.hasOwn(fields, name)) return {};
