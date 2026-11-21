@@ -26,9 +26,7 @@ jobs:
             exit 1
           fi
       - run: npm ci
-      - run: npm test
-      - run: npm run build
-      - run: npm run package:validate
+      - run: npm run ci
       - name: Pack release and write SHA-256 checksum
         id: pack
         shell: bash

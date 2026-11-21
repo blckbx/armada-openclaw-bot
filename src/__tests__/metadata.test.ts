@@ -151,9 +151,10 @@ describe("package and manifest contracts", () => {
     expect(workflow).toContain("contents: write");
     expect(workflow).toContain("npm ci");
     expect(workflow).not.toContain("npm install");
-    expect(workflow).toContain("npm test");
-    expect(workflow).toContain("npm run build");
-    expect(workflow).toContain("npm run package:validate");
+    expect(workflow).toContain("- run: npm run ci");
+    expect(workflow.indexOf("- run: npm run ci")).toBeLessThan(
+      workflow.indexOf("gh release create"),
+    );
     expect(workflow).toContain("npm pack");
     expect(workflow).toContain("sha256sum");
     expect(workflow).toContain("gh release create");
