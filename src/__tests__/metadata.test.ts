@@ -19,7 +19,7 @@ describe("package and manifest contracts", () => {
     const channel = metadata.channel as Record<string, unknown>;
 
     expect(pkg.name).toBe("openclaw-armada-dm");
-    expect(pkg.version).toBe("0.1.4");
+    expect(pkg.version).toBe("0.1.5");
     expect(manifest.id).toBe("armada-dm");
     expect(manifest.kind).toBe("channel");
     expect(manifest.channels).toEqual(["nostr"]);

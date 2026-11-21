@@ -1,7 +1,12 @@
 import type { ChannelPlugin } from "openclaw/plugin-sdk/core";
 import type { NostrEvent } from "nostr-tools/pure";
 import { resolveBotIdentity, type ResolvedArmadaAccount } from "./account.js";
-import { createInboundProcessor, type InboundProcessor } from "./inbound.js";
+import {
+  createInboundProcessor,
+  InboundDispatchError,
+  DirectMessageDeliveryError,
+  type InboundProcessor,
+} from "./inbound.js";
 import {
   RelayManager,
   type RelayManagerOptions,
@@ -9,7 +14,7 @@ import {
   type RelayManagerSnapshot,
 } from "./relay-manager.js";
 import { RecipientRelayRouter } from "./relay-routing.js";
-import { ClaimableReplayGate } from "./replay-gate.js";
+import { ClaimableReplayGate, ReplayProtectionError } from "./replay-gate.js";
 import { getArmadaRuntime } from "./runtime.js";
 
 export interface RelayManagerLike {
@@ -206,28 +211,62 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
 }
 
 // Never interpolate arbitrary error names, messages, stacks, or payloads.
-// Preserve causes internally and expose only bounded built-in classifications.
-function formatInboundDiagnostic(error: unknown): string {
+// Preserve causes internally and expose only fixed classifications and codes.
+export function formatInboundDiagnostic(error: unknown): string {
+  const phases = new Set([
+    "ingress",
+    "prepare_media",
+    "dispatch_call",
+    "record_callback",
+    "dispatch_callback",
+    "replay_commit",
+    "reply_delivery",
+  ]);
   const kinds: string[] = [];
+  const codes: string[] = [];
   const seen = new Set<unknown>();
   let current = error;
   while (kinds.length < 4 && !seen.has(current)) {
     seen.add(current);
     kinds.push(
-      current instanceof TypeError
-        ? "TypeError"
-        : current instanceof ReferenceError
-          ? "ReferenceError"
-          : current instanceof RangeError
-            ? "RangeError"
-            : current instanceof SyntaxError
-              ? "SyntaxError"
-              : current instanceof Error
-                ? "Error"
-                : "Unknown",
+      current instanceof InboundDispatchError
+        ? "InboundDispatchError"
+        : current instanceof DirectMessageDeliveryError
+          ? "DirectMessageDeliveryError"
+          : current instanceof ReplayProtectionError
+            ? "ReplayProtectionError"
+            : current instanceof TypeError
+              ? "TypeError"
+              : current instanceof ReferenceError
+                ? "ReferenceError"
+                : current instanceof RangeError
+                  ? "RangeError"
+                  : current instanceof SyntaxError
+                    ? "SyntaxError"
+                    : current instanceof Error
+                      ? "Error"
+                      : "Unknown",
     );
+    const phase =
+      (current instanceof InboundDispatchError ||
+        current instanceof DirectMessageDeliveryError) &&
+      current.phase !== undefined &&
+      phases.has(current.phase)
+        ? current.phase
+        : undefined;
+    const dispatchKind =
+      current instanceof InboundDispatchError &&
+      current.dispatchKind !== undefined
+        ? ["tool", "block", "final"].includes(current.dispatchKind)
+          ? current.dispatchKind
+          : "unknown"
+        : undefined;
+    if (phase !== undefined)
+      codes.push(
+        ` [phase=${phase}${dispatchKind === undefined ? "" : ` kind=${dispatchKind}`}]`,
+      );
     if (!(current instanceof Error) || current.cause === undefined) break;
     current = current.cause;
   }
-  return `Inbound message processing failed (${kinds.join(" -> ")}).`;
+  return `Inbound message processing failed (${kinds.join(" -> ")})${codes.join("")}.`;
 }

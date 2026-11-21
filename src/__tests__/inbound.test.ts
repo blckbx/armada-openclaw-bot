@@ -9,7 +9,11 @@ import {
 import { getEventHash, getPublicKey, type NostrEvent } from "nostr-tools/pure";
 import { createClaimableDedupe } from "openclaw/plugin-sdk/persistent-dedupe";
 import { describe, expect, it, vi } from "vitest";
-import { createInboundProcessor, InboundDispatchError } from "../inbound.js";
+import {
+  createInboundProcessor,
+  DirectMessageDeliveryError,
+  InboundDispatchError,
+} from "../inbound.js";
 import { createDirectMessage, createTypingIndicator } from "../nip17.js";
 import {
   ClaimableReplayGate,
@@ -220,7 +224,16 @@ describe("allowlisted inbound AI round trip", () => {
     }
   });
 
-  it.each(["throw", "record", "dispatch"] as const)(
+  it.each([
+    "throw",
+    "record",
+    "dispatch",
+    "unsafe_kind",
+    "first_callback",
+    "media",
+    "commit",
+    "reply",
+  ] as const)(
     "preserves the diagnostic cause for a %s failure and releases replay",
     async (failure) => {
       const cause = new TypeError("sensitive SDK failure");
@@ -241,22 +254,63 @@ describe("allowlisted inbound AI round trip", () => {
         publishRecipient: vi.fn(),
         publishSelfCopy: vi.fn(),
         resolveIngress: () => Promise.resolve(allowDecision()),
-        dispatch: (params) => {
+        ...(failure === "media"
+          ? { prepareMedia: () => Promise.reject(cause) }
+          : {}),
+        dispatch: async (params) => {
+          if (failure === "reply") await params.deliver({ text: "reply" });
           if (failure === "throw") return Promise.reject(cause);
           if (failure === "record") params.onRecordError(cause);
-          else params.onDispatchError(cause, { kind: "final" });
+          else if (failure === "dispatch")
+            params.onDispatchError(cause, { kind: "final" });
+          else if (failure === "unsafe_kind")
+            params.onDispatchError(cause, { kind: "sensitive payload" });
+          else if (failure === "first_callback") {
+            params.onRecordError(cause);
+            params.onDispatchError(new Error("later sensitive failure"), {
+              kind: "final",
+            });
+          }
           return Promise.resolve({} as never);
         },
         nowSeconds: () => FIXTURE_NOW,
       });
 
+      if (failure === "commit")
+        gate.claim = () =>
+          Promise.resolve({
+            commit: () => Promise.reject(cause),
+            release: () => {
+              gate.releases += 1;
+            },
+          });
       const error: unknown = await processor
         .handle(createArmadaFixture())
         .catch((error: unknown) => error);
-      expect(error).toBeInstanceOf(InboundDispatchError);
-      expect((error as Error).cause).toBe(cause);
+      expect(error).toBeInstanceOf(
+        failure === "reply" ? DirectMessageDeliveryError : InboundDispatchError,
+      );
+      expect(error).toMatchObject({
+        phase: {
+          throw: "dispatch_call",
+          record: "record_callback",
+          dispatch: "dispatch_callback",
+          unsafe_kind: "dispatch_callback",
+          first_callback: "record_callback",
+          media: "prepare_media",
+          commit: "replay_commit",
+          reply: "reply_delivery",
+        }[failure],
+      });
+      if (failure === "unsafe_kind")
+        expect(error).toMatchObject({ dispatchKind: "unknown" });
+      if (failure === "dispatch")
+        expect(error).toMatchObject({ dispatchKind: "final" });
+      if (failure !== "reply") expect((error as Error).cause).toBe(cause);
       expect((error as Error).message).toBe(
-        "Inbound direct message dispatch failed.",
+        failure === "reply"
+          ? "Direct message delivery failed."
+          : "Inbound direct message dispatch failed.",
       );
       expect(gate.commits).toBe(0);
       expect(gate.releases).toBe(1);

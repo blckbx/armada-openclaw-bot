@@ -37,9 +37,9 @@ For a standard OpenClaw installation, pack and install the managed artifact. Ope
 
 ```bash
 npm pack
-sha256sum openclaw-armada-dm-0.1.4.tgz > openclaw-armada-dm-0.1.4.tgz.sha256
-sha256sum --check openclaw-armada-dm-0.1.4.tgz.sha256
-openclaw plugins install npm-pack:/absolute/path/openclaw-armada-dm-0.1.4.tgz --accept-capabilities
+sha256sum openclaw-armada-dm-0.1.5.tgz > openclaw-armada-dm-0.1.5.tgz.sha256
+sha256sum --check openclaw-armada-dm-0.1.5.tgz.sha256
+openclaw plugins install npm-pack:/absolute/path/openclaw-armada-dm-0.1.5.tgz --accept-capabilities
 openclaw plugins enable armada-dm
 openclaw gateway restart
 ```
@@ -55,14 +55,14 @@ Maintainers can publish the package and checksum in the repository's Releases
 section by pushing a version tag after its version bump reaches `main`:
 
 ```bash
-git tag -a v0.1.4 -m "v0.1.4"
-git push origin v0.1.4
+git tag -a v0.1.5 -m "v0.1.5"
+git push origin v0.1.5
 ```
 
 The tag must exactly match `v` followed by the version in `package.json`. The
 release workflow repeats the install, test, build, package-validation, pack, and
 checksum sequence before creating the GitHub release. It attaches
-`openclaw-armada-dm-0.1.4.tgz` and its `.sha256` checksum as release assets.
+`openclaw-armada-dm-0.1.5.tgz` and its `.sha256` checksum as release assets.
 
 The published `setup-entry.js` uses only the OpenClaw `2026.9.7` public SDK compatibility baseline, and deployment requires OpenClaw `2026.9.7` or newer. It does not run a wizard, prompt for values, edit configuration, read the secret file, publish events, or start relay connections.
 
@@ -209,7 +209,7 @@ Run `openclaw channels status --probe` after every configuration or key change. 
 - `Relay publication failed.` with `publishInbox: true`: at least one discovery relay must accept and return the bot-authored kind-10050 before readiness succeeds.
 - No live subscriptions: inspect each relay's sanitized connection, AUTH, and subscription state. One failed relay is degraded redundancy; all failed relays prevent readiness.
 - `Replay protection is unavailable.`: inbound dispatch is intentionally stopped until durable storage is healthy and the gateway is restarted.
-- `Inbound message processing failed.`: check the OpenClaw channel logger for a bounded cause classification such as `Error -> TypeError`. Error causes are retained internally; arbitrary error messages, stacks, keys, and message contents are excluded from logs and public status. Version 0.1.4 forwards the admitted-owner authorization marker required by OpenClaw 2026.9.7.
+- `Inbound message processing failed.`: check the OpenClaw channel logger for a bounded cause classification such as `InboundDispatchError -> TypeError` and fixed phase codes: `prepare_media`, `dispatch_call`, `record_callback`, `dispatch_callback`, `replay_commit`, and `reply_delivery` (or `ingress` for earlier admission failures). Error causes are retained internally; arbitrary error messages, stacks, keys, and message contents are excluded from logs and public status. Version 0.1.5 preserves custom error classifications and reports callback kind (`tool`, `block`, `final`, or `unknown`) for dispatch callback failures. For example: `Inbound message processing failed (InboundDispatchError -> TypeError) [phase=dispatch_callback kind=final].`
 - Increasing queue-drop or rate-limit counters: the bot is overloaded or the authenticated owner is sending faster than the bounded policy permits.
 
 ## Bot-key rotation

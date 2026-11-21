@@ -1,9 +1,13 @@
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/core";
 import { describe, expect, it, vi } from "vitest";
-import { InboundDispatchError } from "../inbound.js";
+import {
+  InboundDispatchError,
+  DirectMessageDeliveryError,
+} from "../inbound.js";
 import { resolveArmadaAccount } from "../account.js";
 import {
   createArmadaGatewayAdapter,
+  formatInboundDiagnostic,
   type RelayManagerLike,
 } from "../gateway.js";
 import type {
@@ -13,6 +17,7 @@ import type {
 import { setArmadaRuntime } from "../runtime.js";
 import { BOT_PUBLIC_KEY, BOT_SECRET_KEY } from "./nip17-fixtures.js";
 import { createArmadaFixture } from "./nip17-fixtures.js";
+import { ReplayProtectionError } from "../replay-gate.js";
 import { validConfig } from "./helpers.js";
 
 const INITIAL_SNAPSHOT: RelayManagerSnapshot = {
@@ -128,7 +133,7 @@ describe("Slice 3 gateway lifecycle", () => {
       new InboundDispatchError(undefined, { cause }),
     );
     expect(logError).toHaveBeenCalledExactlyOnceWith(
-      "Inbound message processing failed (Error -> TypeError).",
+      "Inbound message processing failed (InboundDispatchError -> TypeError).",
     );
     expect(JSON.stringify(logError.mock.calls)).not.toContain("sensitive");
 
@@ -235,3 +240,63 @@ async function eventually(
   }
   throw new Error("condition was not met");
 }
+
+describe("safe inbound phase diagnostics", () => {
+  it("retains dispatch kind and nested reply and replay classifications", () => {
+    const cause = new ReplayProtectionError();
+    cause.name = "sensitive name";
+    expect(
+      formatInboundDiagnostic(
+        new InboundDispatchError(undefined, { cause }, "replay_commit"),
+      ),
+    ).toBe(
+      "Inbound message processing failed (InboundDispatchError -> ReplayProtectionError) [phase=replay_commit].",
+    );
+    expect(
+      formatInboundDiagnostic(
+        new InboundDispatchError(
+          undefined,
+          {
+            cause: new DirectMessageDeliveryError({
+              cause: new TypeError("sensitive payload"),
+            }),
+          },
+          "dispatch_callback",
+          "final",
+        ),
+      ),
+    ).toBe(
+      "Inbound message processing failed (InboundDispatchError -> DirectMessageDeliveryError -> TypeError) [phase=dispatch_callback kind=final] [phase=reply_delivery].",
+    );
+  });
+
+  it("redacts arbitrary codes and bounds cyclic causes", () => {
+    const error = new InboundDispatchError(
+      "sensitive",
+      undefined,
+      "sensitive phase" as never,
+      "sensitive kind" as never,
+    );
+    error.cause = error;
+    expect(formatInboundDiagnostic(error)).toBe(
+      "Inbound message processing failed (InboundDispatchError).",
+    );
+    expect(
+      formatInboundDiagnostic(
+        new InboundDispatchError(
+          "sensitive",
+          undefined,
+          "dispatch_callback",
+          "sensitive" as never,
+        ),
+      ),
+    ).toBe(
+      "Inbound message processing failed (InboundDispatchError) [phase=dispatch_callback kind=unknown].",
+    );
+    const arbitrary = new Error("sensitive");
+    arbitrary.name = "InboundDispatchError sensitive";
+    expect(formatInboundDiagnostic(arbitrary)).toBe(
+      "Inbound message processing failed (Error).",
+    );
+  });
+});

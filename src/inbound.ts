@@ -32,10 +32,23 @@ import type { ReplayGate } from "./replay-gate.js";
 const HEX_32 = /^[0-9a-f]{64}$/u;
 export const ARMADA_TYPING_REFRESH_MILLISECONDS = 4_000;
 
+export type InboundPhase =
+  | "ingress"
+  | "prepare_media"
+  | "dispatch_call"
+  | "record_callback"
+  | "dispatch_callback"
+  | "replay_commit"
+  | "reply_delivery";
+
+export type DispatchKind = "tool" | "block" | "final" | "unknown";
+
 export class InboundDispatchError extends Error {
   constructor(
     message = "Inbound direct message dispatch failed.",
     options?: ErrorOptions,
+    readonly phase?: InboundPhase,
+    readonly dispatchKind?: DispatchKind,
   ) {
     super(message, options);
     this.name = "InboundDispatchError";
@@ -43,8 +56,10 @@ export class InboundDispatchError extends Error {
 }
 
 export class DirectMessageDeliveryError extends Error {
-  constructor() {
-    super("Direct message delivery failed.");
+  readonly phase = "reply_delivery";
+
+  constructor(options?: ErrorOptions) {
+    super("Direct message delivery failed.", options);
     this.name = "DirectMessageDeliveryError";
   }
 }
@@ -157,6 +172,11 @@ export function createInboundProcessor(
         return { handled: false };
       }
 
+      let phase: InboundPhase = "ingress";
+      const commitReplay = async (): Promise<void> => {
+        phase = "replay_commit";
+        await claim.commit();
+      };
       try {
         const senderPublicKey = authenticated.senderPublicKey;
         const senderAddress = `nostr:${senderPublicKey}`;
@@ -196,13 +216,18 @@ export function createInboundProcessor(
         if (!rateLimiter.consume(senderPublicKey)) {
           // This authenticated logical message was intentionally consumed.
           // Committing prevents relay copies from retrying the same burst.
-          await claim.commit();
+          await commitReplay();
           return { handled: false, rateLimited: true };
         }
 
         const deliveredMessageIds: string[] = [];
         const warnings = new Set<string>();
-        const callbackState: { failed: boolean; cause?: unknown } = {
+        const callbackState: {
+          failed: boolean;
+          cause?: unknown;
+          phase?: InboundPhase;
+          dispatchKind?: DispatchKind;
+        } = {
           failed: false,
         };
         const resolveTurnRecipientRelays = createTurnRelayResolver(() =>
@@ -218,6 +243,7 @@ export function createInboundProcessor(
           signal,
         });
         try {
+          phase = "prepare_media";
           const preparedMedia = await prepareMedia(authenticated.rumor, signal);
           if (isAborted(signal)) {
             claim.release();
@@ -226,6 +252,7 @@ export function createInboundProcessor(
           const mediaContext = {
             media: toInboundMediaFacts(preparedMedia.media),
           };
+          phase = "dispatch_call";
           await dispatch({
             cfg: withAutomaticVisibleReplies(options.cfg),
             runtime: options.runtime,
@@ -251,74 +278,87 @@ export function createInboundProcessor(
               ? {}
               : { extraContext: mediaContext }),
             deliver: async (payload) => {
-              if (isAborted(signal)) return;
-              const text = formatOutboundText(
-                options.runtime,
-                options.cfg,
-                options.accountId,
-                extractText(payload),
-              );
-              if (text.trim() === "" || isAborted(signal)) return;
-              let relayUrls: string[];
               try {
-                relayUrls = await resolveTurnRecipientRelays();
-              } catch {
-                // A transient lookup used by typing must not poison the reply.
+                if (isAborted(signal)) return;
+                const text = formatOutboundText(
+                  options.runtime,
+                  options.cfg,
+                  options.accountId,
+                  extractText(payload),
+                );
+                if (text.trim() === "" || isAborted(signal)) return;
+                let relayUrls: string[];
                 try {
                   relayUrls = await resolveTurnRecipientRelays();
                 } catch {
-                  throw new DirectMessageDeliveryError();
+                  // A transient lookup used by typing must not poison the reply.
+                  try {
+                    relayUrls = await resolveTurnRecipientRelays();
+                  } catch (error) {
+                    throw new DirectMessageDeliveryError({ cause: error });
+                  }
                 }
-              }
-              if (isAborted(signal)) return;
-              if (relayUrls.length === 0)
-                throw new DirectMessageDeliveryError();
-              let reply: CreatedDirectMessage;
-              try {
-                reply = createReply({
+                if (isAborted(signal)) return;
+                if (relayUrls.length === 0)
+                  throw new DirectMessageDeliveryError();
+                const reply = createReply({
                   senderSecretKey: options.identity.secretKey,
                   recipientPublicKey: senderPublicKey,
                   content: text,
                   replyToEventId: authenticated.rumorId,
                   now: nowSeconds(),
                 });
-              } catch {
-                throw new DirectMessageDeliveryError();
-              }
-              if (isAborted(signal)) return;
-              try {
+                if (isAborted(signal)) return;
                 await options.publishRecipient(relayUrls, reply.recipient.wrap);
-              } catch {
-                throw new DirectMessageDeliveryError();
-              }
-              deliveredMessageIds.push(reply.logicalMessageId);
-              if (isAborted(signal)) return;
-              try {
-                await options.publishSelfCopy(reply.selfCopy.wrap);
-              } catch {
-                warnings.add(RECOVERY_COPY_WARNING);
+                deliveredMessageIds.push(reply.logicalMessageId);
+                if (isAborted(signal)) return;
+                try {
+                  await options.publishSelfCopy(reply.selfCopy.wrap);
+                } catch {
+                  warnings.add(RECOVERY_COPY_WARNING);
+                }
+              } catch (error) {
+                if (error instanceof DirectMessageDeliveryError) throw error;
+                throw new DirectMessageDeliveryError({ cause: error });
               }
             },
             onRecordError: (error) => {
-              if (!callbackState.failed) callbackState.cause = error;
+              if (!callbackState.failed) {
+                callbackState.cause = error;
+                callbackState.phase = "record_callback";
+              }
               callbackState.failed = true;
             },
-            onDispatchError: (error) => {
-              if (!callbackState.failed) callbackState.cause = error;
+            onDispatchError: (error, info) => {
+              if (!callbackState.failed) {
+                callbackState.cause = error;
+                callbackState.phase = "dispatch_callback";
+                callbackState.dispatchKind =
+                  info.kind === "tool" ||
+                  info.kind === "block" ||
+                  info.kind === "final"
+                    ? info.kind
+                    : "unknown";
+              }
               callbackState.failed = true;
             },
           });
           if (callbackState.failed) {
-            throw new InboundDispatchError(undefined, {
-              cause: callbackState.cause,
-            });
+            throw new InboundDispatchError(
+              undefined,
+              {
+                cause: callbackState.cause,
+              },
+              callbackState.phase,
+              callbackState.dispatchKind,
+            );
           }
           if (isAborted(signal)) {
-            if (deliveredMessageIds.length > 0) await claim.commit();
+            if (deliveredMessageIds.length > 0) await commitReplay();
             else claim.release();
             return { handled: false };
           }
-          await claim.commit();
+          await commitReplay();
           return {
             handled: true,
             ...(deliveredMessageIds.length === 0
@@ -336,7 +376,7 @@ export function createInboundProcessor(
           error instanceof InboundDispatchError
         )
           throw error;
-        throw new InboundDispatchError(undefined, { cause: error });
+        throw new InboundDispatchError(undefined, { cause: error }, phase);
       }
     },
   };
